@@ -25,6 +25,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -33,13 +34,13 @@ import android.widget.Toast;
 /**
  * KhetHisab — Android shell for https://friendly-hisab-tracker.lovable.app/
  *
- * - progress bar, back navigation, offline screen with retry
- * - zoom + horizontal panning locked
- * - Android 15 edge-to-edge safe
- * - downloads go to the phone's Downloads folder
- * - external links open outside the app
- * - the "Edit with Lovable" badge at the bottom is hidden
- * - a normal Chrome user-agent is sent, so Google sign-in is not blocked inside WebView
+ * v1.2
+ *  - offline screen: friendly picture ("Internet ON karein") instead of the browser's
+ *    error page, so the site URL is never shown to the user
+ *  - Google sign-in: a real Chrome user-agent, pop-up windows allowed, and the Google
+ *    consent page opens in the phone's browser (where the user is already signed in)
+ *    then comes back to the app through a deep link
+ *  - progress bar, back navigation, zoom lock, edge-to-edge safe, downloads
  */
 public class MainActivity extends Activity {
 
@@ -52,23 +53,19 @@ public class MainActivity extends Activity {
 
     private WebView web;
     private ProgressBar bar;
-    private View errorView;
+    private View offlineView;
+    private boolean loadFailed = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.parseColor("#0b1220"));
-
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
-        root.addView(column, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.setBackgroundColor(Color.parseColor("#ffffff"));
 
         web = new WebView(this);
-        column.addView(web, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(web, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         bar.setMax(100);
@@ -76,14 +73,14 @@ public class MainActivity extends Activity {
         root.addView(bar, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(4), Gravity.TOP));
 
-        errorView = buildErrorView();
-        errorView.setVisibility(View.GONE);
-        root.addView(errorView, new FrameLayout.LayoutParams(
+        offlineView = buildOfflineView();
+        offlineView.setVisibility(View.GONE);
+        root.addView(offlineView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         setContentView(root);
 
-        /* Android 15+ draws edge-to-edge by default */
+        /* Android 15+ edge-to-edge */
         root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
@@ -115,16 +112,18 @@ public class MainActivity extends Activity {
         s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         s.setTextZoom(100);
-        s.setJavaScriptCanOpenWindowsAutomatically(true);
-        s.setSupportMultipleWindows(false);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        /* Google login often happens in a pop-up window — allow it */
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
+        s.setSupportMultipleWindows(true);
 
         web.setOverScrollMode(View.OVER_SCROLL_NEVER);
         web.setHorizontalScrollBarEnabled(false);
 
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
+        CookieManager cm = CookieManager.getInstance();
+        cm.setAcceptCookie(true);
+        cm.setAcceptThirdPartyCookies(web, true);
 
         web.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -132,19 +131,45 @@ public class MainActivity extends Activity {
                 bar.setProgress(p);
                 bar.setVisibility(p >= 100 ? View.GONE : View.VISIBLE);
             }
+
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture,
+                                          android.os.Message resultMsg) {
+                /* pop-up login windows open inside the same WebView */
+                WebView.HitTestResult r = view.getHitTestResult();
+                String data = r == null ? null : r.getExtra();
+                if (data != null) {
+                    web.loadUrl(data);
+                }
+                return false;
+            }
         });
 
         web.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                loadFailed = false;
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 bar.setVisibility(View.GONE);
-                if (errorView != null) errorView.setVisibility(View.GONE);
+                if (!loadFailed) {
+                    offlineView.setVisibility(View.GONE);
+                    web.setVisibility(View.VISIBLE);
+                }
                 polishPage(view);
             }
 
             @Override
             public void onReceivedError(WebView view, int code, String description, String failingUrl) {
-                if (failingUrl != null && failingUrl.startsWith("http")) showError();
+                if (failingUrl != null && failingUrl.startsWith("http")) showOffline();
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        android.webkit.WebResourceError error) {
+                if (request != null && request.isForMainFrame()) showOffline();
             }
 
             @Override
@@ -187,17 +212,64 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Hides the "Edit with Lovable" badge and keeps the layout app-like. */
+    /** Friendly offline screen — picture + retry, no site URL anywhere. */
+    private View buildOfflineView() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setBackgroundColor(Color.WHITE);
+
+        ImageView img = new ImageView(this);
+        img.setImageResource(R.drawable.offline_screen);
+        img.setAdjustViewBounds(true);
+        img.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        ip.setMargins(dp(10), dp(10), dp(10), 0);
+        box.addView(img, ip);
+
+        Button retry = new Button(this);
+        retry.setText("Dobara koshish karein");
+        retry.setAllCaps(false);
+        retry.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.setMargins(0, dp(4), 0, dp(26));
+        retry.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { retryLoad(); }
+        });
+        box.addView(retry, bp);
+
+        return box;
+    }
+
+    private void showOffline() {
+        loadFailed = true;
+        bar.setVisibility(View.GONE);
+        web.setVisibility(View.GONE);      // hides the browser error page (and its URL)
+        offlineView.setVisibility(View.VISIBLE);
+    }
+
+    private void retryLoad() {
+        loadFailed = false;
+        offlineView.setVisibility(View.GONE);
+        web.setVisibility(View.VISIBLE);
+        bar.setVisibility(View.VISIBLE);
+        bar.setProgress(0);
+        web.loadUrl(START_URL);
+    }
+
+    /** Hides the "Edit with Lovable" badge. */
     private void polishPage(WebView view) {
         String js = "(function(){"
                 + "if(document.getElementById('__kh_style'))return;"
                 + "var st=document.createElement('style');st.id='__kh_style';"
                 + "st.innerHTML='a[href*=\"lovable.dev\"]{display:none !important;}"
-                + "[id*=\"lovable-badge\"],[class*=\"lovable-badge\"],[class*=\"lovable-badge\"],"
-                + "[data-lovable-badge],#lovable-badge,.lovable-badge{display:none !important;}"
+                + "[id*=\"lovable-badge\"],[class*=\"lovable-badge\"],[data-lovable-badge],"
+                + "#lovable-badge,.lovable-badge{display:none !important;}"
                 + "html,body{overflow-x:hidden !important;}';"
                 + "(document.head||document.documentElement).appendChild(st);"
-                /* hide any fixed bottom-right element whose text mentions Lovable / Edit with */
                 + "try{var all=document.querySelectorAll('a,div,span');"
                 + "for(var i=0;i<all.length;i++){var el=all[i];var t=(el.textContent||'').trim().toLowerCase();"
                 + "if(t.length>0&&t.length<40&&(t==='edit with'||t.indexOf('edit with lovable')>=0||t.indexOf('built with lovable')>=0)){"
@@ -212,9 +284,23 @@ public class MainActivity extends Activity {
         if (url.startsWith("http://") || url.startsWith("https://")) {
             Uri uri = Uri.parse(url);
             String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
-            if (host.endsWith(OWN_HOST) || host.endsWith("supabase.co") || host.endsWith("google.com")
-                    || host.endsWith("googleapis.com") || host.endsWith("gstatic.com")) {
-                return false;  // keep login / api / assets inside
+
+            /* Google / Lovable consent pages: open in the phone's browser, where the user
+               is already signed in with their own Gmail. The redirect comes back to this
+               app through the intent filter in AndroidManifest. */
+            if (host.contains("accounts.google.com") || host.contains("lovable.dev")
+                    || host.contains("googleusercontent.com") && url.contains("oauth")) {
+                try {
+                    Intent i = new Intent(Intent.ACTION_VIEW, uri);
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(i);
+                    return true;
+                } catch (Exception ignored) { }
+            }
+
+            if (host.endsWith(OWN_HOST) || host.endsWith("supabase.co") || host.endsWith("googleapis.com")
+                    || host.endsWith("gstatic.com") || host.endsWith("google.com")) {
+                return false;
             }
             startActivity(new Intent(Intent.ACTION_VIEW, uri));
             return true;
@@ -226,46 +312,19 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    private View buildErrorView() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        box.setBackgroundColor(Color.parseColor("#0b1220"));
-        box.setPadding(dp(28), dp(28), dp(28), dp(28));
-
-        TextView title = new TextView(this);
-        title.setText("Internet nahi mila");
-        title.setTextColor(Color.parseColor("#eaf2ff"));
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        title.setGravity(Gravity.CENTER);
-        box.addView(title);
-
-        TextView sub = new TextView(this);
-        sub.setText("KhetHisab ka hisab cloud mein save hota hai, isliye internet zaroori hai.\nConnection check karke dobara try karein.");
-        sub.setTextColor(Color.parseColor("#8fa0b8"));
-        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        sub.setGravity(Gravity.CENTER);
-        sub.setPadding(0, dp(8), 0, dp(18));
-        box.addView(sub);
-
-        Button retry = new Button(this);
-        retry.setText("Retry");
-        retry.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (errorView != null) errorView.setVisibility(View.GONE);
-                bar.setVisibility(View.VISIBLE);
-                bar.setProgress(0);
-                web.loadUrl(START_URL);
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        /* OAuth redirect coming back from the browser */
+        if (intent != null && intent.getData() != null && web != null) {
+            String u = intent.getData().toString();
+            if (u.startsWith("http")) {
+                loadFailed = false;
+                offlineView.setVisibility(View.GONE);
+                web.setVisibility(View.VISIBLE);
+                web.loadUrl(u);
             }
-        });
-        box.addView(retry);
-        return box;
-    }
-
-    private void showError() {
-        if (errorView != null) errorView.setVisibility(View.VISIBLE);
-        bar.setVisibility(View.GONE);
+        }
     }
 
     private int dp(int v) {
@@ -280,9 +339,15 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && web != null && web.canGoBack()) {
-            web.goBack();
-            return true;
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (offlineView != null && offlineView.getVisibility() == View.VISIBLE) {
+                retryLoad();
+                return true;
+            }
+            if (web != null && web.canGoBack()) {
+                web.goBack();
+                return true;
+            }
         }
         return super.onKeyDown(keyCode, event);
     }
