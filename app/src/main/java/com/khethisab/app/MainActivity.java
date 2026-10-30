@@ -31,7 +31,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * KhetHisab — Android shell for https://hisab-tractor-com.lovable.app/
+ * KhetHisab — Android shell for https://friendly-hisab-tracker.lovable.app/
  *
  * - progress bar, back navigation, offline screen with retry
  * - zoom + horizontal panning locked
@@ -43,7 +43,7 @@ import android.widget.Toast;
  */
 public class MainActivity extends Activity {
 
-    private static final String START_URL = "https://hisab-tractor-com.lovable.app/";
+    private static final String START_URL = "https://friendly-hisab-tracker.lovable.app/";
     private static final String OWN_HOST = "lovable.app";
 
     private static final String UA =

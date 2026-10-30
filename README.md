@@ -2,7 +2,7 @@
 
 **KhetHisab** ("Tractor ka hisab, chat ki tarah aasaan") ka native Android app.
 
-Site: https://hisab-tractor-com.lovable.app/
+Site: https://friendly-hisab-tracker.lovable.app/
 
 **Direct APK download:** https://github.com/rewpal5-dotcom/KhetHisab/releases/latest/download/app-debug.apk
 
